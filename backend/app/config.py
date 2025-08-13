@@ -1,4 +1,10 @@
 import os
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    # dotenv is optional; ignore if not available
+    pass
 
 class Settings:
     USE_MOCKS: bool = os.getenv("USE_MOCKS", "true").lower() == "true"

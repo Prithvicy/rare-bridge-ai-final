@@ -7,3 +7,4 @@ reportlab==4.4.3
 psycopg2-binary==2.9.9
 SQLAlchemy==2.0.32
 supabase==2.6.0
+python-dotenv==1.0.1

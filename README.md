@@ -62,62 +62,54 @@ AI tools and community for rare disorders. This application provides a comprehen
 3. **Enable "Enable email confirmations"** (optional but recommended)
 4. **Click "Save"**
 
-### Step 4: Set Up Database Schema
+### Step 4: Set Up Database Schema (Knowledge Base)
 
-1. **Go to SQL Editor** in your Supabase dashboard
-2. **Create a new query** and paste this SQL:
+1. Go to Supabase → SQL Editor
+2. Create a new query and paste the SQL below. This creates the `knowledge_documents` table and policies used by this app.
 
 ```sql
--- Enable pgvector extension for embeddings
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Drop existing tables if they exist (be careful in production!)
+DROP TABLE IF EXISTS knowledge_submissions CASCADE;
+DROP TABLE IF EXISTS knowledge_documents CASCADE;
 
--- Create profiles table
-CREATE TABLE IF NOT EXISTS profiles (
-    id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    role TEXT DEFAULT 'member' CHECK (role IN ('guest', 'member', 'admin')),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Create knowledge base table
-CREATE TABLE IF NOT EXISTS knowledge_base (
+-- Create knowledge documents table
+CREATE TABLE knowledge_documents (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     title TEXT NOT NULL,
-    content TEXT NOT NULL,
+    content TEXT,
+    document_url TEXT,
+    author_email TEXT NOT NULL,
+    author_name TEXT,
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
-    embedding VECTOR(1536),
+    category TEXT,
+    tags TEXT[],
+    view_count INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    approved_at TIMESTAMP WITH TIME ZONE,
+    approved_by UUID REFERENCES profiles(id)
 );
 
--- Create RLS policies
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE knowledge_base ENABLE ROW LEVEL SECURITY;
+-- Create indexes for better search performance
+CREATE INDEX idx_knowledge_status ON knowledge_documents(status);
+CREATE INDEX idx_knowledge_created ON knowledge_documents(created_at DESC);
+CREATE INDEX idx_knowledge_title ON knowledge_documents(title);
+CREATE INDEX idx_knowledge_search ON knowledge_documents USING gin(to_tsvector('english', title || ' ' || COALESCE(content, '')));
 
--- Profiles policies
-CREATE POLICY "Users can view their own profile" ON profiles
-    FOR SELECT USING (auth.uid() = id);
+-- Enable Row Level Security
+ALTER TABLE knowledge_documents ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users can update their own profile" ON profiles
-    FOR UPDATE USING (auth.uid() = id);
-
-CREATE POLICY "Admins can view all profiles" ON profiles
-    FOR SELECT USING (
-        EXISTS (
-            SELECT 1 FROM profiles 
-            WHERE id = auth.uid() AND role = 'admin'
-        )
-    );
-
--- Knowledge base policies
-CREATE POLICY "Anyone can view approved knowledge" ON knowledge_base
+-- RLS Policies
+-- Everyone can view approved documents
+CREATE POLICY "Anyone can view approved documents" ON knowledge_documents
     FOR SELECT USING (status = 'approved');
 
-CREATE POLICY "Authenticated users can create knowledge" ON knowledge_base
+-- Authenticated users can submit documents
+CREATE POLICY "Authenticated users can submit documents" ON knowledge_documents
     FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
 
-CREATE POLICY "Admins can view all knowledge" ON knowledge_base
+-- Admins can view all documents
+CREATE POLICY "Admins can view all documents" ON knowledge_documents
     FOR SELECT USING (
         EXISTS (
             SELECT 1 FROM profiles 
@@ -125,7 +117,8 @@ CREATE POLICY "Admins can view all knowledge" ON knowledge_base
         )
     );
 
-CREATE POLICY "Admins can update knowledge status" ON knowledge_base
+-- Admins can update documents
+CREATE POLICY "Admins can update documents" ON knowledge_documents
     FOR UPDATE USING (
         EXISTS (
             SELECT 1 FROM profiles 
@@ -133,23 +126,67 @@ CREATE POLICY "Admins can update knowledge status" ON knowledge_base
         )
     );
 
--- Create function to handle new user signup
-CREATE OR REPLACE FUNCTION handle_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO profiles (id, email, role)
-    VALUES (NEW.id, NEW.email, 'member');
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- Admins can delete documents
+CREATE POLICY "Admins can delete documents" ON knowledge_documents
+    FOR DELETE USING (
+        EXISTS (
+            SELECT 1 FROM profiles 
+            WHERE id = auth.uid() AND role = 'admin'
+        )
+    );
 
--- Create trigger for new user signup
-CREATE OR REPLACE TRIGGER on_auth_user_created
-    AFTER INSERT ON auth.users
-    FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+-- Create a function to search documents
+CREATE OR REPLACE FUNCTION search_knowledge_documents(search_query TEXT)
+RETURNS TABLE (
+    id UUID,
+    title TEXT,
+    content TEXT,
+    document_url TEXT,
+    author_email TEXT,
+    author_name TEXT,
+    category TEXT,
+    tags TEXT[],
+    created_at TIMESTAMP WITH TIME ZONE,
+    relevance REAL
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        kd.id,
+        kd.title,
+        kd.content,
+        kd.document_url,
+        kd.author_email,
+        kd.author_name,
+        kd.category,
+        kd.tags,
+        kd.created_at,
+        ts_rank(to_tsvector('english', kd.title || ' ' || COALESCE(kd.content, '')), 
+                plainto_tsquery('english', search_query)) as relevance
+    FROM knowledge_documents kd
+    WHERE kd.status = 'approved'
+        AND (
+            search_query = '' OR
+            to_tsvector('english', kd.title || ' ' || COALESCE(kd.content, '')) @@ 
+            plainto_tsquery('english', search_query)
+        )
+    ORDER BY relevance DESC, kd.created_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create a function to increment view count
+CREATE OR REPLACE FUNCTION increment_view_count(doc_id UUID)
+RETURNS void AS $$
+BEGIN
+    UPDATE knowledge_documents 
+    SET view_count = view_count + 1
+    WHERE id = doc_id;
+END;
+$$ LANGUAGE plpgsql;
 ```
 
-3. **Click "Run"** to execute the SQL
+3. Click "Run" to execute.
+4. Ensure you have a `profiles` table with at least `id` and `role` columns. If you’re using Supabase Auth, a common pattern is to mirror new users into `profiles` and default their `role` to `member`.
 
 ### Step 5: Configure Environment Variables
 
@@ -165,13 +202,16 @@ NEXT_PUBLIC_USE_MOCKS=false
 #### Backend (.env)
 Create `backend/.env` with:
 ```env
-DATABASE_URL=postgresql://postgres:your-db-password@db.your-project-id.supabase.co:5432/postgres
+# Required
 SUPABASE_URL=https://your-project-id.supabase.co
-SUPABASE_SERVICE_KEY=your-service-role-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+USE_MOCKS=false
+FRONTEND_ORIGIN=http://localhost:3000
+
+# Optional
+DATABASE_URL=postgresql://postgres:your-db-password@db.your-project-id.supabase.co:5432/postgres
 OPENAI_API_KEY=sk-your-openai-key-here
 PERPLEXITY_API_KEY=pplx-your-perplexity-key-here
-USE_MOCKS=false
-CORS_ORIGINS=["http://localhost:3000"]
 ```
 
 ### Step 6: Get Database Connection String
@@ -237,7 +277,7 @@ source .venv/bin/activate  # On macOS/Linux
 # Install dependencies
 pip install -r requirements.txt
 
-# Start server
+# Start server (loads backend/.env automatically)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
