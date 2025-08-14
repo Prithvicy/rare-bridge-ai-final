@@ -9,3 +9,4 @@ SQLAlchemy==2.0.32
 supabase==2.6.0
 python-dotenv==1.0.1
 openai==0.28.1
+resend==2.4.0

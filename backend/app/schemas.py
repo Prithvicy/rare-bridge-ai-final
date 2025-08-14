@@ -115,3 +115,15 @@ class GenerateRecipeRequest(BaseModel):
   dietary_restrictions: Optional[List[str]] = None
   allergies: Optional[List[str]] = None
   calories_max: Optional[int] = 400
+
+# Recipe feedback
+class RecipeFeedbackRequest(BaseModel):
+  message_id: str
+  action: Literal["like", "dislike"]
+  recipe_name: Optional[str] = None
+  user_email: Optional[str] = None
+
+class RecipeEmailRequest(BaseModel):
+  to_email: str
+  subject: str
+  body: str

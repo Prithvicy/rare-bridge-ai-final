@@ -8,8 +8,11 @@ from ..schemas import (
     Recipe,
     PWSChatRequest,
     GenerateRecipeRequest,
+    RecipeFeedbackRequest,
+    RecipeEmailRequest,
 )
 from ..config import settings
+import httpx
 from ..services.openai_client import OpenAIClient
 
 router = APIRouter()
@@ -118,3 +121,48 @@ async def recipes(req: RecipesRequest):
     
     # Real implementation would call OpenAI here
     return RecipesResponse(items=[])
+
+@router.post("/feedback")
+async def recipe_feedback(req: RecipeFeedbackRequest):
+    """Record like/dislike for a generated recipe suggestion.
+
+    In mock mode, simply return ok: True. In real mode, this is where you'd
+    persist to a database or analytics store.
+    """
+    try:
+        # In a real implementation, write to DB or analytics
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/email")
+async def email_recipe(req: RecipeEmailRequest):
+    """Send a recipe or assistant message to the requested email.
+
+    In mock/live without mail provider configured, we'll just return ok=True.
+    Hook up an SMTP or transactional email provider here if desired.
+    """
+    try:
+        # If RESEND_API_KEY is not configured, just succeed (mock-ish)
+        if not settings.RESEND_API_KEY:
+            return {"ok": True}
+
+        # Send via Resend API
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": settings.EMAIL_FROM,
+                    "to": [req.to_email],
+                    "subject": req.subject,
+                    "text": req.body,
+                },
+            )
+            res.raise_for_status()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -20,6 +20,8 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useAuth } from "@/lib/auth";
+import { ThumbsUp, ThumbsDown, Mail } from "lucide-react";
 
 interface Message {
   id: string;
@@ -28,6 +30,7 @@ interface Message {
   image?: string;
   recipe?: Recipe;
   suggestions?: string[];
+  reaction?: "like" | "dislike";
 }
 
 interface Recipe {
@@ -149,6 +152,7 @@ const COMMON_ALLERGIES = [
 ];
 
 export default function PWSRecipes() {
+  const { user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
@@ -272,6 +276,100 @@ export default function PWSRecipes() {
     } finally {
       setLoading(false);
       setTimeout(scrollToBottom, 100);
+    }
+  };
+
+  const sendFeedback = async (
+    messageId: string,
+    action: "like" | "dislike",
+    recipeName?: string
+  ) => {
+    // Optimistically toggle
+    let previousReaction: "like" | "dislike" | undefined;
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== messageId) return m;
+        previousReaction = m.reaction;
+        const next = m.reaction === action ? undefined : action;
+        return { ...m, reaction: next };
+      })
+    );
+
+    const finalAction = previousReaction === action ? undefined : action;
+    if (!finalAction) {
+      toast.success("Feedback removed");
+      return;
+    }
+
+    try {
+      await api.pwsRecipes.feedback({
+        message_id: messageId,
+        action: finalAction,
+        recipe_name: recipeName,
+        user_email: user?.email ?? null,
+      });
+      toast.success(
+        finalAction === "like" ? "Marked as liked" : "Marked as disliked"
+      );
+    } catch (e: any) {
+      // Revert on error
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId ? { ...m, reaction: previousReaction } : m
+        )
+      );
+      toast.error("Could not record feedback");
+    }
+  };
+
+  const emailRecipe = async (message: Message) => {
+    const defaultEmail = user?.email || "";
+    const input = window.prompt(
+      "Enter the email address to send to:",
+      defaultEmail
+    );
+    const to = (input || "").trim();
+    if (!to) return;
+
+    let subject = "PWS Assistant Message";
+    let bodyLines: string[] = [];
+    if (message.recipe) {
+      const recipe = message.recipe;
+      subject = `PWS Recipe: ${recipe.name}`;
+      bodyLines = [
+        `Here's your PWS-friendly recipe: ${recipe.name}`,
+        "",
+        `Calories: ${recipe.calories} | Servings: ${recipe.servings}`,
+        `Prep: ${recipe.prep_time} | Cook: ${recipe.cook_time}`,
+        "",
+        "Ingredients:",
+        ...recipe.ingredients.map((i) => `- ${i}`),
+        "",
+        "Instructions:",
+        ...recipe.instructions.map((s, idx) => `${idx + 1}. ${s}`),
+        "",
+        recipe.nutrition
+          ? `Nutrition: Calories ${recipe.nutrition.calories}, Protein ${recipe.nutrition.protein}, Carbs ${recipe.nutrition.carbs}, Fat ${recipe.nutrition.fat}`
+          : "",
+      ];
+    } else {
+      subject = "PWS Assistant Reply";
+      bodyLines = [
+        "Here is the message from your PWS assistant:",
+        "",
+        message.content,
+      ];
+    }
+
+    try {
+      await api.pwsRecipes.email({
+        to_email: to,
+        subject,
+        body: bodyLines.join("\n"),
+      });
+      toast.success("Email sent");
+    } catch (e: any) {
+      toast.error("Failed to send email");
     }
   };
 
@@ -460,10 +558,96 @@ export default function PWSRecipes() {
                             </div>
                           )}
                         </div>
+
+                        {/* Actions */}
+                        <div className="mt-4 flex items-center gap-2">
+                          <button
+                            onClick={() =>
+                              sendFeedback(
+                                message.id,
+                                "like",
+                                message.recipe?.name
+                              )
+                            }
+                            aria-pressed={message.reaction === "like"}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                              message.reaction === "like"
+                                ? "bg-green-600 text-white hover:bg-green-700"
+                                : "bg-green-50 text-green-700 hover:bg-green-100"
+                            }`}
+                            title="Like this recipe"
+                          >
+                            <ThumbsUp className="w-4 h-4" /> Like
+                          </button>
+                          <button
+                            onClick={() =>
+                              sendFeedback(
+                                message.id,
+                                "dislike",
+                                message.recipe?.name
+                              )
+                            }
+                            aria-pressed={message.reaction === "dislike"}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                              message.reaction === "dislike"
+                                ? "bg-red-600 text-white hover:bg-red-700"
+                                : "bg-red-50 text-red-700 hover:bg-red-100"
+                            }`}
+                            title="Dislike this recipe"
+                          >
+                            <ThumbsDown className="w-4 h-4" /> Dislike
+                          </button>
+                          <button
+                            onClick={() => emailRecipe(message)}
+                            className="ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-sm"
+                            title="Email this recipe to yourself"
+                          >
+                            <Mail className="w-4 h-4" /> Email to me
+                          </button>
+                        </div>
                       </div>
                     )}
 
                     {/* Suggestions */}
+                    {/* Actions for assistant messages (when not rendering a structured recipe card). Hidden for initial seed message. */}
+                    {message.type === "assistant" &&
+                      !message.recipe &&
+                      message.id !== "1" && (
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            onClick={() => sendFeedback(message.id, "like")}
+                            aria-pressed={message.reaction === "like"}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                              message.reaction === "like"
+                                ? "bg-green-600 text-white hover:bg-green-700"
+                                : "bg-green-50 text-green-700 hover:bg-green-100"
+                            }`}
+                            title="Like this response"
+                          >
+                            <ThumbsUp className="w-4 h-4" /> Like
+                          </button>
+                          <button
+                            onClick={() => sendFeedback(message.id, "dislike")}
+                            aria-pressed={message.reaction === "dislike"}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                              message.reaction === "dislike"
+                                ? "bg-red-600 text-white hover:bg-red-700"
+                                : "bg-red-50 text-red-700 hover:bg-red-100"
+                            }`}
+                            title="Dislike this response"
+                          >
+                            <ThumbsDown className="w-4 h-4" /> Dislike
+                          </button>
+                          <button
+                            onClick={() => emailRecipe(message)}
+                            className="ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-sm"
+                            title="Email this response to yourself"
+                          >
+                            <Mail className="w-4 h-4" /> Email to me
+                          </button>
+                        </div>
+                      )}
+
                     {message.suggestions && message.suggestions.length > 0 && (
                       <div className="mt-3 space-y-2">
                         <p className="text-sm font-medium">Try asking:</p>

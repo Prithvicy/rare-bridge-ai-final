@@ -238,6 +238,35 @@ export const api = {
       });
     },
 
+    // Provide feedback (like/dislike) for a generated recipe
+    async feedback(params: {
+      message_id: string;
+      action: "like" | "dislike";
+      recipe_name?: string;
+      user_email?: string | null;
+    }): Promise<{ ok: boolean }> {
+      if (USE_MOCKS) {
+        return { ok: true };
+      }
+      return json<{ ok: boolean }>("/recipes/feedback", {
+        method: "POST",
+        body: JSON.stringify(params),
+      });
+    },
+
+    // Email a recipe or message via backend mailer
+    async email(params: {
+      to_email: string;
+      subject: string;
+      body: string;
+    }): Promise<{ ok: boolean }> {
+      if (USE_MOCKS) return { ok: true };
+      return json<{ ok: boolean }>("/recipes/email", {
+        method: "POST",
+        body: JSON.stringify(params),
+      });
+    },
+
     // Analyze food image
     async analyzeImage(file: File): Promise<any> {
       if (USE_MOCKS) {

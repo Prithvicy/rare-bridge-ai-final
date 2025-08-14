@@ -15,5 +15,8 @@ class Settings:
     DATABASE_URL: str | None = os.getenv("DATABASE_URL")
     API_PREFIX: str = ""
     CORS_ORIGINS = [os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")]
+    # Email provider (Resend)
+    RESEND_API_KEY: str | None = os.getenv("RESEND_API_KEY")
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Rare Bridge AI <onboarding@resend.dev>")
 
 settings = Settings()
