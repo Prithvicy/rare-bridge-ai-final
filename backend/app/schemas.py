@@ -91,3 +91,27 @@ class KnowledgeSearchResponse(BaseModel):
 
 class ModerateKnowledgeRequest(BaseModel):
   action: Literal["approved", "rejected"]
+
+# PWS Recipes schemas
+class PWSChatFilters(BaseModel):
+  meal_type: Optional[str] = None
+  vegetables: Optional[List[str]] = None
+  protein: Optional[str] = None
+  carb: Optional[str] = None
+  dietary_restrictions: Optional[List[str]] = None
+  allergies: Optional[List[str]] = None
+  calories_max: Optional[int] = None
+
+class PWSChatRequest(BaseModel):
+  message: str
+  image: Optional[str] = None  # Base64 encoded image
+  filters: Optional[PWSChatFilters] = None
+
+class GenerateRecipeRequest(BaseModel):
+  meal_type: str
+  vegetables: Optional[List[str]] = None
+  protein: Optional[str] = None
+  carb: Optional[str] = None
+  dietary_restrictions: Optional[List[str]] = None
+  allergies: Optional[List[str]] = None
+  calories_max: Optional[int] = 400
