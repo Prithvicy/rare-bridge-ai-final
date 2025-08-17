@@ -17,6 +17,8 @@ import {
   ExternalLink,
   CheckCircle,
   XCircle,
+  Upload,
+  X,
 } from "lucide-react";
 import type {
   KnowledgeDocument,
@@ -46,6 +48,7 @@ export default function Knowledge() {
     tags: "",
   });
   const [submitting, setSubmitting] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
 
   // Search documents
   const searchDocuments = async (page: number = 1) => {
@@ -80,11 +83,37 @@ export default function Knowledge() {
     }
   };
 
+  // Handle file upload
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.type !== "application/pdf") {
+        toast.error("Please upload a PDF file");
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) { // 10MB limit
+        toast.error("File size must be less than 10MB");
+        return;
+      }
+      setUploadedFile(file);
+    }
+  };
+
+  // Remove uploaded file
+  const removeFile = () => {
+    setUploadedFile(null);
+  };
+
   // Submit new document
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title || !formData.author_email) {
       toast.error("Please fill in required fields");
+      return;
+    }
+
+    if (!formData.document_url) {
+      toast.error("Please provide a document URL");
       return;
     }
 
@@ -96,10 +125,21 @@ export default function Knowledge() {
             .map((t) => t.trim())
             .filter(Boolean)
         : [];
-      await api.knowledge.submit({
-        ...formData,
-        tags,
-      });
+
+      if (uploadedFile) {
+        // Submit with file upload for RAG enhancement
+        await api.knowledge.submitWithFile({
+          ...formData,
+          tags,
+        }, uploadedFile);
+      } else {
+        // Submit with URL only
+        await api.knowledge.submit({
+          ...formData,
+          tags,
+        });
+      }
+      
       toast.success(
         "Document submitted successfully! It will appear after admin approval."
       );
@@ -112,6 +152,7 @@ export default function Knowledge() {
         category: "",
         tags: "",
       });
+      setUploadedFile(null);
       setActiveTab("search");
     } catch (error) {
       console.error("Submit error:", error);
@@ -127,7 +168,14 @@ export default function Knowledge() {
     action: "approved" | "rejected"
   ) => {
     try {
-      await api.knowledge.moderate(docId, action);
+      console.log("🔍 Frontend moderation debug:");
+      console.log("  - Document ID:", docId);
+      console.log("  - Action:", action);
+      console.log("  - User object:", user);
+      console.log("  - Admin UUID being sent:", user?.id);
+      
+      // Pass the admin user ID when moderating
+      await api.knowledge.moderate(docId, action, user?.id);
       toast.success(`Document ${action}`);
       loadPendingDocs();
       if (action === "approved") {
@@ -366,7 +414,7 @@ export default function Knowledge() {
 
             <div>
               <label className="block text-sm font-medium mb-2">
-                Document URL
+                Document URL *
               </label>
               <input
                 type="url"
@@ -376,7 +424,52 @@ export default function Knowledge() {
                 }
                 className="w-full px-4 py-3 rounded-xl border focus:ring-2 focus:ring-brand-500"
                 placeholder="https://example.com/document.pdf"
+                required
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Optional: Upload PDF for Enhanced Search
+              </label>
+              <p className="text-sm text-gray-600 mb-3">
+                Upload the PDF file to improve search accuracy in our knowledge base
+              </p>
+              {!uploadedFile ? (
+                <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-brand-500 transition-colors">
+                  <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+                  <p className="text-sm text-gray-600 mb-2">Upload PDF for better search (optional)</p>
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                    id="pdf-upload"
+                  />
+                  <label
+                    htmlFor="pdf-upload"
+                    className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 cursor-pointer inline-block"
+                  >
+                    Choose PDF File
+                  </label>
+                  <p className="text-xs text-gray-500 mt-2">Max file size: 10MB</p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-green-600" />
+                    <span className="text-sm font-medium">{uploadedFile.name}</span>
+                    <span className="text-xs text-gray-500">({(uploadedFile.size / 1024 / 1024).toFixed(1)} MB)</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={removeFile}
+                    className="p-1 hover:bg-red-100 rounded-full"
+                  >
+                    <X className="w-4 h-4 text-red-600" />
+                  </button>
+                </div>
+              )}
             </div>
 
             <div>

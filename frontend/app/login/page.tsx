@@ -1,5 +1,4 @@
 "use client";
-import { supabase } from "@/lib/supabase";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -8,6 +7,7 @@ import {
   getBrowserNavigationAdvice,
   safeNavigate,
 } from "@/lib/utils";
+import { useAuth } from "@/lib/auth";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -16,6 +16,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [browserAdvice, setBrowserAdvice] = useState<string | null>(null);
   const router = useRouter();
+  const { login, user } = useAuth();
 
   // Check for browser-specific issues on mount
   useEffect(() => {
@@ -25,27 +26,6 @@ export default function Login() {
     }
   }, []);
 
-  // Test function to check database connection
-  async function testDatabase() {
-    try {
-      console.log("Testing database connection...");
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .limit(1);
-
-      if (error) {
-        console.error("Database test error:", error);
-        return false;
-      }
-
-      console.log("Database test successful:", data);
-      return true;
-    } catch (e) {
-      console.error("Database test exception:", e);
-      return false;
-    }
-  }
 
   async function onLogin() {
     setErr(null);
@@ -53,26 +33,16 @@ export default function Login() {
     try {
       console.log("Attempting login with:", email);
 
-      // Test database first
-      await testDatabase();
+      // Use AuthProvider's login method instead of direct Supabase call
+      await login(email.trim(), password);
 
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
+      console.log("Login successful via AuthProvider");
 
-      if (error) {
-        console.error("Login error:", error);
-        throw new Error(error.message);
-      }
-
-      console.log("Login successful:", data);
-      console.log("User session:", data.session);
-      console.log("User:", data.user);
-
-      // Use safe navigation that handles wallet extension conflicts
-      console.log("Redirecting to home page...");
-      safeNavigate("/", router);
+      // Add a small delay to allow auth state to propagate, then navigate
+      setTimeout(() => {
+        console.log("Redirecting to home page...");
+        safeNavigate("/", router);
+      }, 100);
     } catch (e: any) {
       console.error("Login exception:", e);
 
@@ -94,23 +64,14 @@ export default function Login() {
     }
   }
 
-  // Check if user is already logged in
+  // Check if user is already logged in using AuthProvider
   useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (session) {
-          console.log("User already logged in, redirecting...");
-          safeNavigate("/", router);
-        }
-      } catch (error) {
-        console.error("Error checking session:", error);
-      }
-    };
-    checkSession();
-  }, [router]);
+    console.log("Login page: User state changed:", user);
+    if (user) {
+      console.log("User already logged in via AuthProvider, redirecting...");
+      safeNavigate("/", router);
+    }
+  }, [user, router]);
 
   return (
     <div className="mx-auto max-w-md px-4 py-12">

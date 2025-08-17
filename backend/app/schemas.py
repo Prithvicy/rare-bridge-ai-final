@@ -81,6 +81,7 @@ class KnowledgeDocument(BaseModel):
   created_at: datetime
   updated_at: datetime
   approved_at: Optional[datetime] = None
+  approved_by: Optional[str] = None  # UUID of admin who approved
 
 class KnowledgeSearchResponse(BaseModel):
   items: List[KnowledgeDocument]
@@ -91,6 +92,7 @@ class KnowledgeSearchResponse(BaseModel):
 
 class ModerateKnowledgeRequest(BaseModel):
   action: Literal["approved", "rejected"]
+  admin_user_id: Optional[str] = None  # UUID of admin performing the action
 
 # PWS Recipes schemas
 class PWSChatFilters(BaseModel):

@@ -17,70 +17,144 @@ import { supabase } from "./supabase";
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
+// Simple request tracking to detect stuck requests
+let activeRequests = new Set<string>();
+let consecutiveTimeouts = 0;
+let lastSuccessTime = Date.now();
+
+// Cache the current auth token to avoid hanging Supabase calls
+let cachedToken: string | null = null;
+let lastTokenTime = 0;
+
 /** Pull the current Supabase access token for Authorization header (Bearer). */
-async function authHeaders(): Promise<Record<string, string>> {
+function authHeaders(): Record<string, string> {
   if (USE_MOCKS) return {};
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  
+  // If we have a recent cached token (less than 5 minutes old), use it
+  if (cachedToken && (Date.now() - lastTokenTime < 5 * 60 * 1000)) {
+    console.log(`🔑 Using cached token (${Math.floor((Date.now() - lastTokenTime) / 1000)}s old)`);
+    return { Authorization: `Bearer ${cachedToken}` };
+  }
+  
+  // Try to get token from localStorage (Supabase stores it there)
+  try {
+    const supabaseAuthToken = localStorage.getItem('sb-rrhfqnttiktqfsqykcfo-auth-token');
+    if (supabaseAuthToken) {
+      const authData = JSON.parse(supabaseAuthToken);
+      const token = authData?.access_token;
+      if (token) {
+        console.log(`🔑 Retrieved token from localStorage`);
+        cachedToken = token;
+        lastTokenTime = Date.now();
+        return { Authorization: `Bearer ${token}` };
+      }
+    }
+  } catch (e) {
+    console.warn('Could not get token from localStorage:', e);
+  }
+  
+  console.warn('🔑 No valid token found - proceeding without auth');
+  return {};
 }
 
-/** JSON helper that automatically sets headers and throws on non-2xx, with a timeout. */
+// Update cached token when auth state changes
+if (typeof window !== 'undefined') {
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (session?.access_token) {
+      console.log(`🔑 Updating cached token from auth state change: ${event}`);
+      cachedToken = session.access_token;
+      lastTokenTime = Date.now();
+    } else {
+      console.log(`🔑 Clearing cached token from auth state change: ${event}`);
+      cachedToken = null;
+      lastTokenTime = 0;
+    }
+  });
+}
+
+/** JSON helper that automatically sets headers and throws on non-2xx, with a simple timeout. */
 async function json<T>(
   path: string,
   opts?: RequestInit & { timeoutMs?: number }
 ): Promise<T> {
-  const extra = await authHeaders();
+  const requestId = `${path}-${Date.now()}`;
+  console.log(`Making API request to: ${path} (ID: ${requestId})`);
+  
+  // Allow concurrent requests, just track them
+  activeRequests.add(requestId);
+  
+  console.log(`🔑 Getting auth headers...`);
+  const extra = authHeaders();
+  console.log(`🔑 Auth headers received:`, extra);
+  
+  console.log(`🎛️ Creating AbortController...`);
   const controller = new AbortController();
-  const timeoutMs = opts?.timeoutMs ?? 15000; // 15s default
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  console.log(`🎛️ AbortController created`);
+  
+  console.log(`⏰ Setting up timeout...`);
+  const timeoutMs = opts?.timeoutMs ?? 5000; // 5s timeout - balance between speed and reliability
+  const timeout = setTimeout(() => {
+    consecutiveTimeouts++;
+    console.error(`🚨 TIMEOUT #${consecutiveTimeouts}: ${path} after ${timeoutMs}ms`);
+    
+    // If we've had multiple timeouts and no success in 30 seconds, reload page
+    if (consecutiveTimeouts >= 2 && Date.now() - lastSuccessTime > 30000) {
+      console.error("🔄 Multiple timeouts detected - reloading page to reset connections...");
+      setTimeout(() => window.location.reload(), 500);
+    }
+    
+    controller.abort();
+  }, timeoutMs);
+  
+  console.log(`⏱️ Timeout set for ${timeoutMs}ms for request: ${path}`);
+  
   try {
+    console.log(`🚀 About to fetch: ${BASE}${path}`);
+    console.log(`📋 Headers:`, { "Content-Type": "application/json", ...extra });
+    
     const res = await fetch(`${BASE}${path}`, {
       ...opts,
       signal: controller.signal,
+      keepalive: false, // Don't keep connections alive
+      cache: 'no-store', // Force fresh requests
       headers: {
         "Content-Type": "application/json",
+        "Connection": "close", // Force connection close
         ...(opts?.headers || {}),
         ...extra,
       } as HeadersInit,
     });
-    // If unauthorized, try one silent refresh and retry once
+    
+    console.log(`✅ Response received from ${path}:`, res.status, res.statusText);
+    
+    // Reset timeout counter on successful response
+    consecutiveTimeouts = 0;
+    lastSuccessTime = Date.now();
+    
+    // If unauthorized, the session has expired
     if (res.status === 401) {
-      try {
-        await supabase.auth.refreshSession();
-      } catch (_) {
-        // ignore
-      }
-      const retryHeaders = {
-        "Content-Type": "application/json",
-        ...(opts?.headers || {}),
-        ...(await authHeaders()),
-      } as HeadersInit;
-      const retryRes = await fetch(`${BASE}${path}`, {
-        ...opts,
-        signal: controller.signal,
-        headers: retryHeaders,
-      });
-      if (!retryRes.ok) {
-        const text = await retryRes.text().catch(() => "");
-        throw new Error(
-          `${retryRes.status} ${path} ${text ? "- " + text : ""}`
-        );
-      }
-      return retryRes.json() as Promise<T>;
+      console.log('Received 401 - session expired, user needs to log in again');
+      // Clear the current session state
+      await supabase.auth.signOut();
+      throw new Error('Your session has expired. Please log in again.');
     }
+    
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`${res.status} ${path} ${text ? "- " + text : ""}`);
     }
+    
     return res.json() as Promise<T>;
   } catch (err: any) {
+    console.error(`API request to ${path} failed:`, err);
     if (err?.name === "AbortError") {
       throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
     }
     throw err;
   } finally {
     clearTimeout(timeout);
+    activeRequests.delete(requestId);
+    console.log(`Cleaned up request for: ${path} (ID: ${requestId})`);
   }
 }
 
@@ -105,6 +179,111 @@ export const api = {
     return json<{ reply: ChatMessage }>("/chat", {
       method: "POST",
       body: JSON.stringify({ messages }),
+      timeoutMs: 45000, // Increased timeout for LLM calls
+    });
+  },
+
+  async chatKnowledgeBase({ messages }: { messages: ChatMessage[] }) {
+    if (USE_MOCKS) {
+      const last = messages[messages.length - 1]?.content || "";
+      const mockSimilarity = Math.random();
+      
+      if (mockSimilarity > 0.7) {
+        return {
+          reply: {
+            role: "assistant",
+            content: `Based on our knowledge base: "${last}"\n\n[This would be the RAG response from knowledge base vectors]`,
+            source: "knowledge_base",
+            similarity_score: mockSimilarity,
+            citations: [
+              { id: "kb-1", title: "PKU Treatment Guidelines", author: "Dr. Sarah Johnson" },
+            ],
+          } as ChatMessage,
+        };
+      } else {
+        return {
+          reply: {
+            role: "assistant",
+            content: "",
+            source: "knowledge_base",
+            similarity_score: mockSimilarity,
+          } as ChatMessage,
+        };
+      }
+    }
+    return json<{ reply: ChatMessage }>("/chat/knowledge-base", {
+      method: "POST",
+      body: JSON.stringify({ messages }),
+      timeoutMs: 45000,
+    });
+  },
+
+  async uploadDocumentForChat(file: File) {
+    if (USE_MOCKS) {
+      return {
+        id: "mock-doc-123", // Changed from document_id to id to match new endpoint
+        filename: file.name,
+        chunks_count: 5,
+        message: "Document processed successfully"
+      };
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("note", "Uploaded for chat"); // Add optional note
+
+    const extra = authHeaders();
+    const res = await fetch(`${BASE}/docs/upload`, { // Changed to new endpoint
+      method: "POST",
+      body: formData,
+      headers: { ...extra } as HeadersInit,
+    });
+    
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`${res.status} - ${text || "Upload failed"}`);
+    }
+    
+    return res.json();
+  },
+
+  async chatWithDocument({ documentId, messages }: { documentId: string; messages: ChatMessage[] }) {
+    if (USE_MOCKS) {
+      const last = messages[messages.length - 1]?.content || "";
+      return {
+        reply: {
+          role: "assistant",
+          content: `Based on your uploaded document regarding: "${last}"\n\n[This would be the RAG response from uploaded document vectors]`,
+          source: "rag_document", // Changed to match new system
+          similarity_score: 0.85,
+          citations: [
+            { id: documentId, title: "Uploaded Document", author: "Uploaded by user" },
+          ],
+        } as ChatMessage,
+      };
+    }
+    return json<{ reply: ChatMessage }>(`/docs/${documentId}/chat`, { // Changed to new endpoint
+      method: "POST",
+      body: JSON.stringify({ messages }),
+      timeoutMs: 45000,
+    });
+  },
+
+  async getGeneralResponse({ messages }: { messages: ChatMessage[] }) {
+    if (USE_MOCKS) {
+      const last = messages[messages.length - 1]?.content || "";
+      return {
+        reply: {
+          role: "assistant",
+          content: `Here's a general response about: "${last}"\n\n[This would be a ChatGPT response when knowledge base search fails]`,
+          source: "general",
+        } as ChatMessage,
+      };
+    }
+    return json<{ reply: ChatMessage }>("/chat/general-response", {
+      method: "POST",
+      body: JSON.stringify({ messages }),
+      timeoutMs: 45000,
     });
   },
 
@@ -235,6 +414,7 @@ export const api = {
       return json<any>("/recipes/chat", {
         method: "POST",
         body: JSON.stringify(params),
+        timeoutMs: 30000, // 30 seconds for AI/LLM responses
       });
     },
 
@@ -341,6 +521,7 @@ export const api = {
       return json<any>("/recipes/generate-recipe", {
         method: "POST",
         body: JSON.stringify(params),
+        timeoutMs: 30000, // 30 seconds for AI/LLM responses
       });
     },
   },
@@ -417,6 +598,41 @@ export const api = {
         body: JSON.stringify(data),
         timeoutMs: 20000,
       });
+    },
+
+    // Submit a new document with file upload
+    async submitWithFile(data: KnowledgeSubmitData, file: File): Promise<KnowledgeSubmitResponse> {
+      if (USE_MOCKS) {
+        return {
+          success: true,
+          id: "mock-123",
+          message: "Document submitted for review",
+        };
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("title", data.title);
+      formData.append("author_email", data.author_email);
+      formData.append("document_url", data.document_url || "");  // Required field
+      if (data.content) formData.append("content", data.content);
+      if (data.author_name) formData.append("author_name", data.author_name);
+      if (data.category) formData.append("category", data.category);
+      if (data.tags) formData.append("tags", JSON.stringify(data.tags));
+
+      const extra = authHeaders();
+      const res = await fetch(`${BASE}/knowledge/submit-with-file`, {
+        method: "POST",
+        body: formData,
+        headers: { ...extra } as HeadersInit, // Don't set Content-Type for multipart
+      });
+      
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} - ${text || "Upload failed"}`);
+      }
+      
+      return res.json();
     },
 
     // Search documents
@@ -506,14 +722,26 @@ export const api = {
     // Moderate document (admin)
     async moderate(
       id: string,
-      action: "approved" | "rejected"
+      action: "approved" | "rejected",
+      adminUserId?: string
     ): Promise<KnowledgeModerateResponse> {
+      console.log("📡 API moderate call debug:");
+      console.log("  - Document ID:", id);
+      console.log("  - Action:", action);
+      console.log("  - Admin User ID received:", adminUserId);
+      
+      const requestBody = { 
+        action,
+        admin_user_id: adminUserId 
+      };
+      console.log("  - Request body being sent:", requestBody);
+      
       if (USE_MOCKS) {
         return { success: true, message: `Document ${action}` };
       }
       return json<KnowledgeModerateResponse>(`/knowledge/moderate/${id}`, {
         method: "POST",
-        body: JSON.stringify({ action }),
+        body: JSON.stringify(requestBody),
         timeoutMs: 15000,
       });
     },

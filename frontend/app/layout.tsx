@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { Banner } from "@/components/Banner";
 import { AuthProvider } from "@/lib/auth";
 import { BraveBrowserNotice } from "@/components/BraveBrowserNotice";
+import { ConnectionStatus } from "@/components/ConnectionStatus";
 
 export const metadata = {
   title: "Rare Bridge AI",
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Footer />
           <Toaster richColors />
           <BraveBrowserNotice />
+          <ConnectionStatus />
         </AuthProvider>
       </body>
     </html>

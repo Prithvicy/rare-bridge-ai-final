@@ -270,9 +270,33 @@ export default function PWSRecipes() {
       setMessages((prev) => [...prev, assistantMessage]);
       setSelectedImage(null);
       setShowFilters(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error:", error);
-      toast.error("Failed to get response. Please try again.");
+      
+      let errorMessage = "Failed to get response. Please try again.";
+      
+      if (error.message?.includes('Session expired')) {
+        errorMessage = "Your session has expired. Please refresh the page and log in again.";
+      } else if (error.message?.includes('Backend server is not responding')) {
+        errorMessage = "Unable to connect to the server. Please check your internet connection and refresh the page.";
+      } else if (error.message?.includes('timed out')) {
+        errorMessage = "Request timed out. The server might be busy. Please try again.";
+      } else if (error.message?.includes('401')) {
+        errorMessage = "Authentication failed. Please refresh the page and log in again.";
+      } else if (error.message?.includes('500')) {
+        errorMessage = "Server error occurred. Please try again in a moment.";
+      }
+      
+      toast.error(errorMessage);
+      
+      // Add error message to chat
+      const errorChatMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: "assistant",
+        content: `❌ ${errorMessage}\n\nIf this problem persists, please refresh the page or contact support.`,
+        suggestions: ["Refresh page", "Try a simpler request", "Check your connection"],
+      };
+      setMessages((prev) => [...prev, errorChatMessage]);
     } finally {
       setLoading(false);
       setTimeout(scrollToBottom, 100);
